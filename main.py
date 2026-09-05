@@ -150,16 +150,18 @@ def call_siliconflow(api_key, system, user):
     )
 
 
-# Gemini 模型候选（按可用性回退）：先用官方稳定别名，避免具体版本号下线导致 404
+# Gemini 模型候选：实测只有 *-latest 官方别名有效（具体版本号如 2.5-flash/2.0-flash 已 404 下线）
 GEMINI_MODELS = [
     os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
+    "gemini-pro-latest",
+    "gemini-flash-lite-latest",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash-lite",
 ]
 # 视为临时故障、可重试的 HTTP 状态码
 RETRY_CODES = (429, 500, 502, 503, 504)
+# 指数退避（秒）：免费档 503/429 过载时常需等待较久，累计约 5.5 分钟/模型
+RETRY_DELAYS = [15, 30, 60, 90, 120]
 
 
 def call_gemini(api_key, system, user, timeout=300):
@@ -171,7 +173,7 @@ def call_gemini(api_key, system, user, timeout=300):
     body = json.dumps(payload).encode("utf-8")
     last_err = None
     for model in GEMINI_MODELS:
-        for attempt in range(3):  # 每个模型最多试 3 次，应对免费档 503/429 过载
+        for attempt in range(len(RETRY_DELAYS) + 1):  # 每个模型最多 6 次尝试
             url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                    + model + ":generateContent?key=" + api_key)
             req = urllib.request.Request(url, data=body,
@@ -182,12 +184,15 @@ def call_gemini(api_key, system, user, timeout=300):
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code == 404:
-                    print(f"[Gemini] {model}: HTTP 404，模型不存在，换下一个")
+                    print(f"[Gemini] {model}: HTTP 404 模型不可用，换下一个")
                     break  # 换模型
                 if e.code in RETRY_CODES:
-                    wait = 6 * (attempt + 1)
-                    print(f"[Gemini] {model}: HTTP {e.code} 临时不可用，{wait}s 后重试"
-                          f"（第 {attempt + 1}/3 次）")
+                    if attempt >= len(RETRY_DELAYS):
+                        print(f"[Gemini] {model}: 重试次数用尽，换下一个模型")
+                        break
+                    wait = RETRY_DELAYS[attempt]
+                    print(f"[Gemini] {model}: HTTP {e.code} 过载/限流，等待 {wait}s 后重试"
+                          f"（第 {attempt + 1}/{len(RETRY_DELAYS) + 1} 次）")
                     time.sleep(wait)
                     continue
                 raise  # 其余错误（403 密钥无效等）直接抛出
