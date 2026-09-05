@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 财经买方研究日报推送（GitHub Actions 版，LLM + 联网搜索）
-流程：Tavily 联网搜索 -> LLM(硅基流动 DeepSeek-V3.2 或 GitHub Models GPT-4o) 按买方框架生成报告 -> PushPlus 推送微信
+流程：Tavily 联网搜索 -> LLM(Google Gemini 免费版，或硅基流动 DeepSeek-V3.2) 按买方框架生成报告 -> PushPlus 推送微信
 用法：python main.py [morning|evening|weekly|auto]
-环境变量：LLM_PROVIDER=siliconflow(默认) | github
+环境变量：LLM_PROVIDER=gemini(默认) | siliconflow
 需要 Secret：
   - 公共：TAVILY_API_KEY / PUSHPLUS_TOKEN
-  - siliconflow 方案：SILICONFLOW_API_KEY
-  - github 方案：GITHUB_TOKEN（Actions 自动提供，需 workflow 开 models: read）
+  - gemini 方案：GEMINI_API_KEY（https://aistudio.google.com/apikey 免费获取）
+  - siliconflow 方案：SILICONFLOW_API_KEY（免费额度单次上限较低，长报告可能 402）
 """
 import os
 import sys
@@ -128,18 +128,23 @@ def call_siliconflow(api_key, system, user):
     )
 
 
-def call_github_models(token, system, user):
-    # GitHub Models 免费层输入上限 8K、输出上限 4K token；加长度约束避免截断
-    hint = "\n\n[长度约束] 当前接口单次输入上限约 8000 token、输出上限约 4000 token（中文约 2000 字），请精简表达，保留 10 段结构的核心判断与数字，删除冗余展开。"
-    return _chat(
-        "https://models.inference.ai.azure.com/v1/chat/completions",
-        token,
-        "gpt-4o",
-        system, user,
-        max_tokens=4000,
-        extra_hint=hint,
-        timeout=120,
-    )
+def call_gemini(api_key, system, user, model="gemini-2.0-flash", timeout=300):
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           + model + ":generateContent?key=" + api_key)
+    payload = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        d = json.loads(r.read())
+    try:
+        return d["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        return "（Gemini 未返回内容: " + json.dumps(d, ensure_ascii=False)[:600] + "）"
 
 
 def push(token, title, content):
@@ -169,21 +174,21 @@ def main():
         mode = "weekly" if wd == 6 else ("morning" if 8 <= bj.hour < 12 else "evening")
 
     tag = {"morning": "晨", "evening": "晚", "weekly": "周报"}[mode]
-    provider = os.environ.get("LLM_PROVIDER", "siliconflow").lower()
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
 
     tavily = os.environ.get("TAVILY_API_KEY")
     token = os.environ.get("PUSHPLUS_TOKEN")
 
-    if provider == "github":
-        gh = os.environ.get("GITHUB_TOKEN")
+    if provider == "gemini":
+        gm = os.environ.get("GEMINI_API_KEY")
         missing = [n for n, v in (("TAVILY_API_KEY", tavily),
-                                  ("GITHUB_TOKEN", gh),
+                                  ("GEMINI_API_KEY", gm),
                                   ("PUSHPLUS_TOKEN", token)) if not v]
         if missing:
             sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
-        provider_label = "GPT版"
-        gen = lambda s, u: call_github_models(gh, s, u)
-        print("调用 GitHub Models(gpt-4o) 生成报告 ...")
+        provider_label = "Gemini版"
+        gen = lambda s, u: call_gemini(gm, s, u)
+        print("调用 Google Gemini 生成报告 ...")
     else:
         sf = os.environ.get("SILICONFLOW_API_KEY")
         missing = [n for n, v in (("TAVILY_API_KEY", tavily),
@@ -201,9 +206,9 @@ def main():
     system = framework + "\n\n" + seg
 
     print(f"模式={mode} 开始联网检索 {len(SEARCHES)} 个主题 ...")
-    # GitHub Models 免费层输入仅 8K，压缩搜索素材以适配
-    content_cap = 300 if provider == "github" else 600
-    res_cap = 4 if provider == "github" else 5
+    # Gemini 上下文极大(1M token)，无需压缩搜索素材
+    content_cap = 600
+    res_cap = 5
     blocks = []
     for label, q, days, topic in SEARCHES:
         blocks.append(f"### {label}\n" + tavily_search(tavily, q, days, topic, res_cap, content_cap))
