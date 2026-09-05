@@ -11,6 +11,7 @@
   - siliconflow 方案：SILICONFLOW_API_KEY（免费额度单次上限较低，长报告可能 402）
 """
 import os
+import re
 import sys
 import json
 import time
@@ -20,18 +21,35 @@ import datetime
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
+# 持仓标的新浪行情代码（用于报告中的「市场反应 / 已定价多少」分析）
+QUOTE_CODES = {
+    "英伟达 NVDA": "gb_nvda",
+    "ASML": "gb_asml",
+    "美光 MU": "gb_mu",
+    "特斯拉 TSLA": "gb_tsla",
+    "谷歌 GOOGL": "gb_goog",
+    "拼多多 PDD": "gb_pdd",
+    "美团 3690.HK": "rt_hk03690",
+    "青岛啤酒 600600": "sh600600",
+    "通威股份 600438": "sh600438",
+    "沪深300指数": "sh000300",
+    "COMEX黄金": "hf_GC",
+}
+
 MORNING_SEGMENT = """━━━━━━━━━━━【时段：工作晨报 09:00（A股港股盘前、美股隔夜收盘）】━━━━━━━━━━━
 当前为交易日早上09:00（北京时间，美股已收盘、A股/港股盘前）。请真实执行：
 1. 用联网搜索采集：①隔夜美股收盘（指数/板块/NVDA/MU/SKH/ASML/TSLA/GOOG/PDD 涨跌与原因）；②美联储/美债/美元/黄金隔夜动向；③当日中国宏观政策/行业重大事件；④今日A股港股盘前要点；⑤明日及本周重大事件；⑥持仓财报日历与预期更新。
-2. 按日报结构输出（用今天北京时间真实日期，标注"晨"）：①一句话②市场环境③3-5件事④持仓影响⑤风险⑥机会⑦操作⑧验证指标⑨今日重点⑩财报日历（结构同晚报）。
-3. 请直接输出完整 Markdown 报告正文（以「━━━━ 📅 每日投资情报 | {日期}（周X）晨 ━━━━」开头），推送由系统自动完成。
+2. 按日报结构输出（用今天北京时间真实日期，标注"晨"）：①一句话②市场环境③3-5件事④持仓影响⑤风险⑥机会⑦操作⑧验证指标⑨今日重点⑩财报日历（结构同晚报）。每件事必须含：【事件(含日期)】【事实(含数据日期)】【市场反应(隔夜美股/相关标的的价格变化，用下方【行情快照】佐证)】【为什么重要】【对我的持仓】【影响时间(注明起算点)】【市场是否已经定价(以价格反应为依据)】【下一步验证】。
+3. 【时效性与行情铁律】所有事件与数据必须标注日期(YYYY-MM-DD)及时效标签(今日/24小时内/本周内/更早)，禁止引用无日期的信息。系统会在素材末尾提供【行情快照】，必须用它回答【市场反应】并判断【市场是否已经定价】；行情缺失须明写"行情数据缺失"，严禁编造价格数字。
+4. 请直接输出完整 Markdown 报告正文（以「━━━━ 📅 每日投资情报 | {日期}（周X）晨 ━━━━」开头），推送由系统自动完成。
 """
 
 WEEKLY_SEGMENT = """━━━━━━━━━━━【时段：周报 周日21:00（本周复盘 + 下周红点）】━━━━━━━━━━━
 当前为周日21:00。请真实执行：
 1. 用联网搜索采集本周重大事件复盘与下周红点事项（宏观数据时点/FOMC/持仓财报窗口/行业催化）。
-2. 输出结构侧重：①本周一句话②本周市场环境复盘③本周最重要3-5件事（含验证/是否被证伪）④持仓影响与逻辑是否被证伪(A/B/C/D)⑤组合风险评分⑥下周最大风险⑦下周最大机会⑧是否需要操作⑨下周验证指标⑩持仓财报日历与预期(未来2-4周)。
-3. 请直接输出完整 Markdown 报告正文（以「━━━━ 📅 每日投资情报 | {日期}（周日）周报 ━━━━」开头），推送由系统自动完成。
+2. 输出结构侧重：①本周一句话②本周市场环境复盘③本周最重要3-5件事（含验证/是否被证伪）④持仓影响与逻辑是否被证伪(A/B/C/D)⑤组合风险评分⑥下周最大风险⑦下周最大机会⑧是否需要操作⑨下周验证指标⑩持仓财报日历与预期(未来2-4周)。每件事必须含【事件(本周具体日期)】【事实(含数据日期)】【市场反应(本周相关标的价格/涨跌幅变化)】【为什么重要】【对我的持仓】【影响时间】【市场是否已经定价(以价格反应为依据)】。
+3. 【时效性与行情铁律】所有事件与数据必须标注具体日期，禁止引用无日期信息；系统会在素材末尾提供【行情快照】，须用其周内涨跌幅变化佐证【市场反应】与【市场是否已经定价】；行情缺失须明写"行情数据缺失"，严禁编造价格。
+4. 请直接输出完整 Markdown 报告正文（以「━━━━ 📅 每日投资情报 | {日期}（周日）周报 ━━━━」开头），推送由系统自动完成。
 """
 
 SEARCHES = [
@@ -87,7 +105,10 @@ def tavily_search(api_key, query, days=2, topic="news", max_results=5, content_c
         out = []
         for it in results:
             c = (it.get("content") or "")[:content_chars]
-            out.append(f"- {it.get('title', '')}（{it.get('url', '')}）\n  {c}")
+            # 带上发布日期，确保报告能判断时效性
+            pub = it.get("published_date") or it.get("publishedDate") or ""
+            date_tag = f"[{pub[:10]}] " if pub else "[日期未知] "
+            out.append(f"- {date_tag}{it.get('title', '')}（{it.get('url', '')}）\n  {c}")
         return "\n".join(out)
     except Exception as e:
         return f"（检索失败：{e}）"
@@ -180,6 +201,56 @@ def call_gemini(api_key, system, user, timeout=300):
     return "（Gemini 无可用模型）"
 
 
+def _yahoo_quote(symbol, name):
+    """Yahoo 兜底（新浪没有的标的，如 SK 海力士）"""
+    url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
+           + symbol + "?interval=1d&range=5d")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.loads(r.read())
+        meta = d["chart"]["result"][0]["meta"]
+        price = meta.get("regularMarketPrice")
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        pct = (price - prev) / prev * 100 if prev else None
+        return f"- {name}: {price}（{pct:+.2f}%）" if pct is not None else f"- {name}: {price}"
+    except Exception:
+        return f"- {name}: （行情获取失败）"
+
+
+def fetch_quotes():
+    """抓取持仓标的最新价与涨跌幅，供报告分析『市场反应/已定价多少』。
+    行情不是主流程，失败只降级不中断。"""
+    codes = ",".join(QUOTE_CODES.values())
+    url = "https://hq.sinajs.cn/list=" + codes
+    req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw = r.read().decode("gbk", "ignore")
+    except Exception as e:
+        return "（行情接口不可用：%s）" % e
+
+    lines = []
+    for name, code in QUOTE_CODES.items():
+        m = re.search(r'hq_str_%s="([^"]*)"' % re.escape(code), raw)
+        if not m or not m.group(1):
+            continue
+        f = m.group(1).split(",")
+        try:
+            if code.startswith("gb_"):          # 美股：名称,现价,涨跌幅%,时间
+                lines.append(f"- {name}: {f[1]}（{f[2]}%） 数据时间 {f[3]}")
+            elif code.startswith("rt_hk"):      # 港股：...,现价,涨跌额,涨跌幅%
+                lines.append(f"- {name}: {f[6]}（{f[8]}%）")
+            else:                                # A股/商品：名称,今开,昨收,现价...
+                prev, now = float(f[2]), float(f[3])
+                lines.append(f"- {name}: {now}（{(now - prev) / prev * 100:+.2f}%）")
+        except Exception:
+            lines.append(f"- {name}: （解析失败）")
+    # SK 海力士新浪无，走 Yahoo
+    lines.append(_yahoo_quote("000660.KS", "SK海力士 000660.KS"))
+    return "\n".join(lines) if lines else "（行情无数据）"
+
+
 def push(token, title, content):
     body = urllib.parse.urlencode({
         "token": token,
@@ -246,9 +317,19 @@ def main():
     for label, q, days, topic in SEARCHES:
         blocks.append(f"### {label}\n" + tavily_search(tavily, q, days, topic, res_cap, content_cap))
 
-    user = (f"以下是北京时间 {bj.strftime('%Y-%m-%d')}（{WEEKDAYS[wd]}）"
-            f"通过联网检索得到的素材，每条标注来源。请基于你的系统提示词，生成《{tag}》报告：\n\n"
-            + "\n\n".join(blocks))
+    print("抓取持仓行情快照（用于分析市场对消息的反应）...")
+    quotes = fetch_quotes()
+    print(quotes)
+
+    now_str = bj.strftime("%Y-%m-%d %H:%M")
+    user = (f"以下是北京时间 {now_str}（{WEEKDAYS[wd]}）"
+            f"通过联网检索得到的素材，每条已标注来源与发布日期。请基于你的系统提示词，生成《{tag}》报告：\n\n"
+            + "\n\n".join(blocks)
+            + f"\n\n### 行情快照（北京时间 {now_str} 抓取，用于分析市场对消息的反应）\n"
+            + quotes
+            + "\n\n【输出硬要求】①每条事件必须带具体日期与时效标签；②每条事件必须有【市场反应】，"
+              "用上方行情快照或检索到的价格变化说明消息出来后市场怎么走；③【市场是否已经定价】"
+              "必须以价格反应为依据，禁止凭空判断；④行情数据缺失时明写，严禁编造价格。")
 
     report = gen(system, user)
 
