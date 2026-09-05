@@ -128,23 +128,45 @@ def call_siliconflow(api_key, system, user):
     )
 
 
-def call_gemini(api_key, system, user, model="gemini-2.0-flash", timeout=300):
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           + model + ":generateContent?key=" + api_key)
+# Gemini 模型候选（按顺序回退）：先用官方稳定别名，避免具体版本号下线导致 404
+GEMINI_MODELS = [
+    os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
+
+
+def call_gemini(api_key, system, user, timeout=300):
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000},
     }
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body,
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.loads(r.read())
-    try:
-        return d["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        return "（Gemini 未返回内容: " + json.dumps(d, ensure_ascii=False)[:600] + "）"
+    last_err = None
+    for model in GEMINI_MODELS:
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               + model + ":generateContent?key=" + api_key)
+        req = urllib.request.Request(url, data=body,
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            last_err = e
+            print(f"[Gemini] 模型 {model} 请求失败: HTTP {e.code}")
+            # 仅模型名/路径不存在(404)时换下一个；其余(403密钥/429限流等)直接抛出
+            if e.code == 404:
+                continue
+            raise
+        print(f"[Gemini] 使用模型: {model}")
+        try:
+            return d["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return "（Gemini 未返回内容: " + json.dumps(d, ensure_ascii=False)[:600] + "）"
+    if last_err:
+        raise last_err
+    return "（Gemini 无可用模型）"
 
 
 def push(token, title, content):
