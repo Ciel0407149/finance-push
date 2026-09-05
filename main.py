@@ -160,8 +160,11 @@ GEMINI_MODELS = [
 ]
 # 视为临时故障、可重试的 HTTP 状态码
 RETRY_CODES = (429, 500, 502, 503, 504)
-# 指数退避（秒）：免费档 503/429 过载时常需等待较久，累计约 5.5 分钟/模型
-RETRY_DELAYS = [15, 30, 60, 90, 120]
+# 每次重试的等待（秒）；累计 80s，避免单次调用拖太久
+RETRY_DELAYS = [10, 25, 45]
+# 整个 Gemini 调用的总时间预算（秒）。超时则放弃重试直接报错，
+# 交给下一次定时任务再试——避免当日免费额度耗尽时无意义空转。
+GEMINI_BUDGET = 240
 
 
 def call_gemini(api_key, system, user, timeout=300):
@@ -172,8 +175,16 @@ def call_gemini(api_key, system, user, timeout=300):
     }
     body = json.dumps(payload).encode("utf-8")
     last_err = None
+    started = time.time()
+
+    def over_budget():
+        return (time.time() - started) > GEMINI_BUDGET
+
     for model in GEMINI_MODELS:
-        for attempt in range(len(RETRY_DELAYS) + 1):  # 每个模型最多 6 次尝试
+        if over_budget():
+            print(f"[Gemini] 已达总时间预算 {GEMINI_BUDGET}s，停止尝试")
+            break
+        for attempt in range(len(RETRY_DELAYS) + 1):  # 每个模型最多 4 次尝试
             url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                    + model + ":generateContent?key=" + api_key)
             req = urllib.request.Request(url, data=body,
@@ -187,8 +198,9 @@ def call_gemini(api_key, system, user, timeout=300):
                     print(f"[Gemini] {model}: HTTP 404 模型不可用，换下一个")
                     break  # 换模型
                 if e.code in RETRY_CODES:
-                    if attempt >= len(RETRY_DELAYS):
-                        print(f"[Gemini] {model}: 重试次数用尽，换下一个模型")
+                    if attempt >= len(RETRY_DELAYS) or over_budget():
+                        print(f"[Gemini] {model}: 不再等待，"
+                              f"{'已达时间预算' if over_budget() else '重试次数用尽'}")
                         break
                     wait = RETRY_DELAYS[attempt]
                     print(f"[Gemini] {model}: HTTP {e.code} 过载/限流，等待 {wait}s 后重试"
