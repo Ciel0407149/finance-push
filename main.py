@@ -13,6 +13,7 @@
 import os
 import sys
 import json
+import time
 import urllib.request
 import urllib.parse
 import datetime
@@ -128,12 +129,16 @@ def call_siliconflow(api_key, system, user):
     )
 
 
-# Gemini 模型候选（按顺序回退）：先用官方稳定别名，避免具体版本号下线导致 404
+# Gemini 模型候选（按可用性回退）：先用官方稳定别名，避免具体版本号下线导致 404
 GEMINI_MODELS = [
     os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
     "gemini-2.5-flash",
     "gemini-2.0-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite",
 ]
+# 视为临时故障、可重试的 HTTP 状态码
+RETRY_CODES = (429, 500, 502, 503, 504)
 
 
 def call_gemini(api_key, system, user, timeout=300):
@@ -145,25 +150,31 @@ def call_gemini(api_key, system, user, timeout=300):
     body = json.dumps(payload).encode("utf-8")
     last_err = None
     for model in GEMINI_MODELS:
-        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-               + model + ":generateContent?key=" + api_key)
-        req = urllib.request.Request(url, data=body,
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                d = json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            last_err = e
-            print(f"[Gemini] 模型 {model} 请求失败: HTTP {e.code}")
-            # 仅模型名/路径不存在(404)时换下一个；其余(403密钥/429限流等)直接抛出
-            if e.code == 404:
-                continue
-            raise
-        print(f"[Gemini] 使用模型: {model}")
-        try:
-            return d["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception:
-            return "（Gemini 未返回内容: " + json.dumps(d, ensure_ascii=False)[:600] + "）"
+        for attempt in range(3):  # 每个模型最多试 3 次，应对免费档 503/429 过载
+            url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                   + model + ":generateContent?key=" + api_key)
+            req = urllib.request.Request(url, data=body,
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    d = json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if e.code == 404:
+                    print(f"[Gemini] {model}: HTTP 404，模型不存在，换下一个")
+                    break  # 换模型
+                if e.code in RETRY_CODES:
+                    wait = 6 * (attempt + 1)
+                    print(f"[Gemini] {model}: HTTP {e.code} 临时不可用，{wait}s 后重试"
+                          f"（第 {attempt + 1}/3 次）")
+                    time.sleep(wait)
+                    continue
+                raise  # 其余错误（403 密钥无效等）直接抛出
+            print(f"[Gemini] 使用模型: {model}")
+            try:
+                return d["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception:
+                return "（Gemini 未返回内容: " + json.dumps(d, ensure_ascii=False)[:600] + "）"
     if last_err:
         raise last_err
     return "（Gemini 无可用模型）"
