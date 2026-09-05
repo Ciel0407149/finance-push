@@ -8,14 +8,14 @@
 - **周日 21:00（北京）周报**：本周复盘 + 财报日历
 - 周六不推送
 
-报告由 **Tavily 联网搜索 + DeepSeek 大模型**按买方投资研究框架生成（降噪、持仓影响、风险/机会/操作判断、财报日历），再以 Markdown 推送至微信（PushPlus）。
+报告由 **Tavily 联网搜索 + 硅基流动 SiliconFlow（DeepSeek-V3）大模型**按买方投资研究框架生成（降噪、持仓影响、风险/机会/操作判断、财报日历），再以 Markdown 推送至微信（PushPlus）。
 
 ## 部署步骤（一次性）
 1. 在 GitHub 新建一个仓库（如 `finance-push`），把本目录（`main.py`、`PROMPT_EVENING.md`、`.github/workflows/daily.yml`）推上去。
 2. 仓库 → Settings → Secrets and variables → Actions → **New repository secret**，依次添加 3 个：
    - `PUSHPLUS_TOKEN`：你的 PushPlus Token（https://www.pushplus.plus 「我的」→ 个人中心 复制）
    - `TAVILY_API_KEY`：Tavily 搜索 API Key（https://tavily.com 注册，免费额度 1000 次/月）
-   - `DEEPSEEK_API_KEY`：DeepSeek API Key（https://platform.deepseek.com 注册，极便宜）
+   - `SILICONFLOW_API_KEY`：硅基流动 SiliconFlow API Key（https://cloud.siliconflow.cn 注册，新用户送 2000 万 token 免费额度）
 3. 打开仓库 → Actions 页，确认 workflow 已启用（默认启用）。
 4. 首次建议手动跑一次验证：Actions → 该 workflow → Run workflow → 选 `evening`（绕开周六跳过），看微信是否收到。
 
@@ -31,7 +31,7 @@ GitHub Actions 的 cron 使用 **UTC**：
 ```bash
 # 需要三个环境变量
 export TAVILY_API_KEY=xxx
-export DEEPSEEK_API_KEY=xxx
+export SILICONFLOW_API_KEY=xxx
 export PUSHPLUS_TOKEN=xxx
 
 python3 main.py auto
@@ -41,6 +41,6 @@ python3 main.py weekly
 ```
 
 ## 注意事项
-- 免费额度：GitHub Actions 每月 2000 分钟；Tavily 免费 1000 次/月（每日约 16 次搜索）；DeepSeek 按 token 计费，约 ¥1/百万 token，每日成本极低。
+- 免费额度：GitHub Actions 每月 2000 分钟；Tavily 免费 1000 次/月（每日约 16 次搜索）；硅基流动新用户送 2000 万 token（约 ¥14），DeepSeek-V3 约 ¥2/百万输入、¥3/百万输出，日报每日成本可忽略。
 - 买方研究框架（含你的持仓、筛选规则、10 段输出结构）保存在 `PROMPT_EVENING.md`，可随时修改。
 - 财报日期为公开一致预期 / 推算，标注「待官方确认」者以公司公告为准。
