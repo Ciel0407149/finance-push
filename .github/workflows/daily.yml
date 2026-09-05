@@ -1,0 +1,27 @@
+name: 财经推送
+
+on:
+  schedule:
+    - cron: "0 1 * * 1-5"   # 北京 09:00 周一~周五 晨报
+    - cron: "0 13 * * 1-5"  # 北京 21:00 周一~周五 晚报
+    - cron: "0 13 * * 0"    # 北京 21:00 周日 周报
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "morning / evening / weekly / auto"
+        required: false
+        default: "auto"
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 运行推送
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python main.py ${{ github.event.inputs.mode || 'auto' }}
