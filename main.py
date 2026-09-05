@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 财经买方研究日报推送（GitHub Actions 版，LLM + 联网搜索）
-流程：Tavily 联网搜索 -> 硅基流动 SiliconFlow(DeepSeek-V3) 按买方框架生成报告 -> PushPlus 推送微信
+流程：Tavily 联网搜索 -> LLM(硅基流动 DeepSeek-V3 或 GitHub Models GPT-4o) 按买方框架生成报告 -> PushPlus 推送微信
 用法：python main.py [morning|evening|weekly|auto]
-需要 Secret：TAVILY_API_KEY / SILICONFLOW_API_KEY / PUSHPLUS_TOKEN
+环境变量：LLM_PROVIDER=siliconflow(默认) | github
+需要 Secret：
+  - 公共：TAVILY_API_KEY / PUSHPLUS_TOKEN
+  - siliconflow 方案：SILICONFLOW_API_KEY
+  - github 方案：GITHUB_TOKEN（Actions 自动提供，需 workflow 开 models: read）
 """
 import os
 import sys
@@ -15,7 +19,6 @@ import datetime
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-# 晨报 / 周报 时段说明（与 PROMPT_EVENING.md 中的晚服说明并列，共用前面的买方框架）
 MORNING_SEGMENT = """━━━━━━━━━━━【时段：工作晨报 09:00（A股港股盘前、美股隔夜收盘）】━━━━━━━━━━━
 当前为交易日早上09:00（北京时间，美股已收盘、A股/港股盘前）。请真实执行：
 1. 用联网搜索采集：①隔夜美股收盘（指数/板块/NVDA/MU/SKH/ASML/TSLA/GOOG/PDD 涨跌与原因）；②美联储/美债/美元/黄金隔夜动向；③当日中国宏观政策/行业重大事件；④今日A股港股盘前要点；⑤明日及本周重大事件；⑥持仓财报日历与预期更新。
@@ -30,7 +33,6 @@ WEEKLY_SEGMENT = """━━━━━━━━━━━【时段：周报 周日21
 3. 请直接输出完整 Markdown 报告正文（以「━━━━ 📅 每日投资情报 | {日期}（周日）周报 ━━━━」开头），推送由系统自动完成。
 """
 
-# 联网搜索查询（label, query, days, topic）
 SEARCHES = [
     ("A股港股收盘", "A股 港股 今日收盘 上证 深证 创业板 恒生 板块 异动 成交 北向资金", 1, "news"),
     ("宏观政策", "美联储 FOMC 美债收益率 美元 CPI PCE 非农 今日 宏观 政策", 2, "news"),
@@ -90,18 +92,22 @@ def tavily_search(api_key, query, days=2, topic="news", max_results=5):
         return f"（检索失败：{e}）"
 
 
-def call_deepseek(api_key, system, user):
-    body = json.dumps({
-        "model": "deepseek-ai/DeepSeek-V3",
+def _chat(base_url, api_key, model, system, user, max_tokens=None, extra_hint=None):
+    sys_content = system + (extra_hint or "")
+    payload = {
+        "model": model,
         "messages": [
-            {"role": "system", "content": system},
+            {"role": "system", "content": sys_content},
             {"role": "user", "content": user},
         ],
         "temperature": 0.3,
         "stream": False,
-    }).encode("utf-8")
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.siliconflow.cn/v1/chat/completions",
+        base_url,
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -111,6 +117,28 @@ def call_deepseek(api_key, system, user):
     with urllib.request.urlopen(req, timeout=150) as r:
         d = json.loads(r.read())
     return d["choices"][0]["message"]["content"]
+
+
+def call_siliconflow(api_key, system, user):
+    return _chat(
+        "https://api.siliconflow.cn/v1/chat/completions",
+        api_key,
+        "deepseek-ai/DeepSeek-V3",
+        system, user,
+    )
+
+
+def call_github_models(token, system, user):
+    # GitHub Models 免费层输出上限约 4K token（中文约 2000 字），加长度约束避免截断
+    hint = "\n\n[长度约束] 当前接口单次输出上限约 4000 token（中文约 2000 字），请精简表达，保留 10 段结构的核心判断与数字，删除冗余展开。"
+    return _chat(
+        "https://models.github.ai/inference/chat/completions",
+        token,
+        "openai/gpt-4o",
+        system, user,
+        max_tokens=4000,
+        extra_hint=hint,
+    )
 
 
 def push(token, title, content):
@@ -134,21 +162,37 @@ def main():
     bj = bj_now()
     wd = bj.weekday()
     if mode == "auto":
-        if wd == 5:  # 周六跳过
+        if wd == 5:
             print("周六，跳过推送")
             return
         mode = "weekly" if wd == 6 else ("morning" if 8 <= bj.hour < 12 else "evening")
 
     tag = {"morning": "晨", "evening": "晚", "weekly": "周报"}[mode]
+    provider = os.environ.get("LLM_PROVIDER", "siliconflow").lower()
 
     tavily = os.environ.get("TAVILY_API_KEY")
-    siliconflow = os.environ.get("SILICONFLOW_API_KEY")
     token = os.environ.get("PUSHPLUS_TOKEN")
-    missing = [n for n, v in (("TAVILY_API_KEY", tavily),
-                              ("SILICONFLOW_API_KEY", siliconflow),
-                              ("PUSHPLUS_TOKEN", token)) if not v]
-    if missing:
-        sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
+
+    if provider == "github":
+        gh = os.environ.get("GITHUB_TOKEN")
+        missing = [n for n, v in (("TAVILY_API_KEY", tavily),
+                                  ("GITHUB_TOKEN", gh),
+                                  ("PUSHPLUS_TOKEN", token)) if not v]
+        if missing:
+            sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
+        provider_label = "GPT版"
+        gen = lambda s, u: call_github_models(gh, s, u)
+        print("调用 GitHub Models(gpt-4o) 生成报告 ...")
+    else:
+        sf = os.environ.get("SILICONFLOW_API_KEY")
+        missing = [n for n, v in (("TAVILY_API_KEY", tavily),
+                                  ("SILICONFLOW_API_KEY", sf),
+                                  ("PUSHPLUS_TOKEN", token)) if not v]
+        if missing:
+            sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
+        provider_label = "DeepSeek版"
+        gen = lambda s, u: call_siliconflow(sf, s, u)
+        print("调用 SiliconFlow(DeepSeek-V3) 生成报告 ...")
 
     framework, evening_seg = split_prompt(load_prompt())
     seg = evening_seg if mode == "evening" else (
@@ -164,13 +208,12 @@ def main():
             f"通过联网检索得到的素材，每条标注来源。请基于你的系统提示词，生成《{tag}》报告：\n\n"
             + "\n\n".join(blocks))
 
-    print("调用 SiliconFlow(DeepSeek-V3) 生成报告 ...")
-    report = call_deepseek(siliconflow, system, user)
+    report = gen(system, user)
 
-    title = f"📊 投资情报 · {bj.strftime('%Y-%m-%d')}（{WEEKDAYS[wd]}）{tag}"
+    title = f"📊 投资情报 · {bj.strftime('%Y-%m-%d')}（{WEEKDAYS[wd]}）{tag} · {provider_label}"
     resp = push(token, title, report)
     print("PushPlus 返回:", resp)
-    print(f"已推送{tag}，约 {len(report)} 字")
+    print(f"已推送{tag}（{provider_label}），约 {len(report)} 字")
 
 
 if __name__ == "__main__":
