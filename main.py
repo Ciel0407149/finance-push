@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 财经买方研究日报推送（GitHub Actions 版，LLM + 联网搜索）
-流程：Tavily 联网搜索 -> DeepSeek 按买方框架生成报告 -> PushPlus 推送微信
+流程：Tavily 联网搜索 -> 硅基流动 SiliconFlow(DeepSeek-V3) 按买方框架生成报告 -> PushPlus 推送微信
 用法：python main.py [morning|evening|weekly|auto]
-需要 Secret：TAVILY_API_KEY / DEEPSEEK_API_KEY / PUSHPLUS_TOKEN
+需要 Secret：TAVILY_API_KEY / SILICONFLOW_API_KEY / PUSHPLUS_TOKEN
 """
 import os
 import sys
 import json
 import urllib.request
+import urllib.parse
 import datetime
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -91,7 +92,7 @@ def tavily_search(api_key, query, days=2, topic="news", max_results=5):
 
 def call_deepseek(api_key, system, user):
     body = json.dumps({
-        "model": "deepseek-chat",
+        "model": "deepseek-ai/DeepSeek-V3",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -100,7 +101,7 @@ def call_deepseek(api_key, system, user):
         "stream": False,
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
+        "https://api.siliconflow.cn/v1/chat/completions",
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -141,10 +142,10 @@ def main():
     tag = {"morning": "晨", "evening": "晚", "weekly": "周报"}[mode]
 
     tavily = os.environ.get("TAVILY_API_KEY")
-    deepseek = os.environ.get("DEEPSEEK_API_KEY")
+    siliconflow = os.environ.get("SILICONFLOW_API_KEY")
     token = os.environ.get("PUSHPLUS_TOKEN")
     missing = [n for n, v in (("TAVILY_API_KEY", tavily),
-                              ("DEEPSEEK_API_KEY", deepseek),
+                              ("SILICONFLOW_API_KEY", siliconflow),
                               ("PUSHPLUS_TOKEN", token)) if not v]
     if missing:
         sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
@@ -163,8 +164,8 @@ def main():
             f"通过联网检索得到的素材，每条标注来源。请基于你的系统提示词，生成《{tag}》报告：\n\n"
             + "\n\n".join(blocks))
 
-    print("调用 DeepSeek 生成报告 ...")
-    report = call_deepseek(deepseek, system, user)
+    print("调用 SiliconFlow(DeepSeek-V3) 生成报告 ...")
+    report = call_deepseek(siliconflow, system, user)
 
     title = f"📊 投资情报 · {bj.strftime('%Y-%m-%d')}（{WEEKDAYS[wd]}）{tag}"
     resp = push(token, title, report)
