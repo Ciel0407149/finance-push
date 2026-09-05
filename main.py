@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 财经买方研究日报推送（GitHub Actions 版，LLM + 联网搜索）
-流程：Tavily 联网搜索 -> LLM(硅基流动 DeepSeek-V3 或 GitHub Models GPT-4o) 按买方框架生成报告 -> PushPlus 推送微信
+流程：Tavily 联网搜索 -> LLM(硅基流动 DeepSeek-V3.2 或 GitHub Models GPT-4o) 按买方框架生成报告 -> PushPlus 推送微信
 用法：python main.py [morning|evening|weekly|auto]
 环境变量：LLM_PROVIDER=siliconflow(默认) | github
 需要 Secret：
@@ -123,7 +123,7 @@ def call_siliconflow(api_key, system, user):
     return _chat(
         "https://api.siliconflow.cn/v1/chat/completions",
         api_key,
-        "deepseek-ai/DeepSeek-V3",
+        "deepseek-ai/DeepSeek-V3.2",
         system, user,
     )
 
@@ -192,7 +192,7 @@ def main():
             sys.exit("缺少环境变量(请在 GitHub Secrets 配置): " + ", ".join(missing))
         provider_label = "DeepSeek版"
         gen = lambda s, u: call_siliconflow(sf, s, u)
-        print("调用 SiliconFlow(DeepSeek-V3) 生成报告 ...")
+        print("调用 SiliconFlow(DeepSeek-V3.2) 生成报告 ...")
 
     framework, evening_seg = split_prompt(load_prompt())
     seg = evening_seg if mode == "evening" else (
