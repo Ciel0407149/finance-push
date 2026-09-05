@@ -62,7 +62,7 @@ def split_prompt(full):
     return full[:i], full[i:]
 
 
-def tavily_search(api_key, query, days=2, topic="news", max_results=5):
+def tavily_search(api_key, query, days=2, topic="news", max_results=5, content_chars=600):
     body = json.dumps({
         "api_key": api_key,
         "query": query,
@@ -85,14 +85,14 @@ def tavily_search(api_key, query, days=2, topic="news", max_results=5):
             return "（无检索结果）"
         out = []
         for it in results:
-            c = (it.get("content") or "")[:600]
+            c = (it.get("content") or "")[:content_chars]
             out.append(f"- {it.get('title', '')}（{it.get('url', '')}）\n  {c}")
         return "\n".join(out)
     except Exception as e:
         return f"（检索失败：{e}）"
 
 
-def _chat(base_url, api_key, model, system, user, max_tokens=None, extra_hint=None):
+def _chat(base_url, api_key, model, system, user, max_tokens=None, extra_hint=None, timeout=300):
     sys_content = system + (extra_hint or "")
     payload = {
         "model": model,
@@ -114,7 +114,7 @@ def _chat(base_url, api_key, model, system, user, max_tokens=None, extra_hint=No
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=150) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
     return d["choices"][0]["message"]["content"]
 
@@ -129,15 +129,16 @@ def call_siliconflow(api_key, system, user):
 
 
 def call_github_models(token, system, user):
-    # GitHub Models 免费层输出上限约 4K token（中文约 2000 字），加长度约束避免截断
-    hint = "\n\n[长度约束] 当前接口单次输出上限约 4000 token（中文约 2000 字），请精简表达，保留 10 段结构的核心判断与数字，删除冗余展开。"
+    # GitHub Models 免费层输入上限 8K、输出上限 4K token；加长度约束避免截断
+    hint = "\n\n[长度约束] 当前接口单次输入上限约 8000 token、输出上限约 4000 token（中文约 2000 字），请精简表达，保留 10 段结构的核心判断与数字，删除冗余展开。"
     return _chat(
-        "https://models.github.ai/inference/chat/completions",
+        "https://models.inference.ai.azure.com/v1/chat/completions",
         token,
-        "openai/gpt-4o",
+        "gpt-4o",
         system, user,
         max_tokens=4000,
         extra_hint=hint,
+        timeout=120,
     )
 
 
@@ -200,9 +201,12 @@ def main():
     system = framework + "\n\n" + seg
 
     print(f"模式={mode} 开始联网检索 {len(SEARCHES)} 个主题 ...")
+    # GitHub Models 免费层输入仅 8K，压缩搜索素材以适配
+    content_cap = 300 if provider == "github" else 600
+    res_cap = 4 if provider == "github" else 5
     blocks = []
     for label, q, days, topic in SEARCHES:
-        blocks.append(f"### {label}\n" + tavily_search(tavily, q, days, topic))
+        blocks.append(f"### {label}\n" + tavily_search(tavily, q, days, topic, res_cap, content_cap))
 
     user = (f"以下是北京时间 {bj.strftime('%Y-%m-%d')}（{WEEKDAYS[wd]}）"
             f"通过联网检索得到的素材，每条标注来源。请基于你的系统提示词，生成《{tag}》报告：\n\n"
