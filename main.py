@@ -158,13 +158,14 @@ GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
 ]
-# 视为临时故障、可重试的 HTTP 状态码
-RETRY_CODES = (429, 500, 502, 503, 504)
-# 每次重试的等待（秒）；累计 80s，避免单次调用拖太久
+# 视为临时过载、值得退避重试的状态码
+RETRY_CODES = (500, 502, 503, 504)
+# 退避等待（秒）
 RETRY_DELAYS = [10, 25, 45]
-# 整个 Gemini 调用的总时间预算（秒）。超时则放弃重试直接报错，
-# 交给下一次定时任务再试——避免当日免费额度耗尽时无意义空转。
-GEMINI_BUDGET = 240
+# 总时间预算（秒）。必须留够时间让回退链走到最后一个模型——
+# 2026-09-06 周报失败就是因为预算只剩 240s，前两个模型耗光后没轮到可用的 lite 模型就放弃了。
+# job timeout 为 20 分钟，这里给 8 分钟安全。
+GEMINI_BUDGET = 480
 
 
 def call_gemini(api_key, system, user, timeout=300):
@@ -197,13 +198,17 @@ def call_gemini(api_key, system, user, timeout=300):
                 if e.code == 404:
                     print(f"[Gemini] {model}: HTTP 404 模型不可用，换下一个")
                     break  # 换模型
+                if e.code == 429:
+                    # 配额耗尽/限流：等待无意义，立刻换下一个模型，把预算留给可能还能用的模型
+                    print(f"[Gemini] {model}: HTTP 429 配额耗尽，立即换下一个模型")
+                    break
                 if e.code in RETRY_CODES:
                     if attempt >= len(RETRY_DELAYS) or over_budget():
                         print(f"[Gemini] {model}: 不再等待，"
                               f"{'已达时间预算' if over_budget() else '重试次数用尽'}")
                         break
                     wait = RETRY_DELAYS[attempt]
-                    print(f"[Gemini] {model}: HTTP {e.code} 过载/限流，等待 {wait}s 后重试"
+                    print(f"[Gemini] {model}: HTTP {e.code} 过载，等待 {wait}s 后重试"
                           f"（第 {attempt + 1}/{len(RETRY_DELAYS) + 1} 次）")
                     time.sleep(wait)
                     continue
