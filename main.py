@@ -273,6 +273,48 @@ def fetch_quotes():
     return "\n".join(lines) if lines else "（行情无数据）"
 
 
+def already_handled():
+    """补跑专用：检查本次推送窗口内是否已有成功推送，或主跑仍在进行。
+    返回 True 表示应当跳过（避免重复推送两条一样的报告，或与主跑撞车）。"""
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    token = os.environ.get("GITHUB_TOKEN")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not (repo and token):
+        return False  # 本地运行无这些变量，照常推送
+    url = f"https://api.github.com/repos/{repo}/actions/runs?per_page=15"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", "Bearer " + token)
+    req.add_header("Accept", "application/vnd.github+json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        print(f"[补跑检查] 查询运行记录失败（{e}），按未推送处理")
+        return False
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for r in data.get("workflow_runs", []):
+        if str(r.get("id")) == str(run_id):
+            continue
+        try:
+            created = datetime.datetime.strptime(
+                r["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except Exception:
+            continue
+        age_min = (now - created).total_seconds() / 60.0
+        if age_min > 120:      # 只看近 2 小时内的运行
+            continue
+        st, con = r.get("status"), r.get("conclusion")
+        if con == "success":
+            print(f"[补跑检查] {age_min:.0f} 分钟前已成功推送过，本次跳过，避免重复")
+            return True
+        if st in ("in_progress", "queued", "waiting"):
+            print(f"[补跑检查] {age_min:.0f} 分钟前启动的推送仍在进行（{st}），本次跳过")
+            return True
+    return False
+
+
 def push(token, title, content):
     body = urllib.parse.urlencode({
         "token": token,
@@ -301,6 +343,13 @@ def main():
 
     tag = {"morning": "晨", "evening": "晚", "weekly": "周报"}[mode]
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+
+    # 补跑（整点后 40 分钟那次）：先确认主跑是否失败，失败才补发
+    if os.environ.get("IS_RETRY", "").lower() == "true":
+        if already_handled():
+            print("补跑结束：本次无需重复推送")
+            return
+        print("[补跑] 未发现成功推送记录，开始补发 ...")
 
     tavily = os.environ.get("TAVILY_API_KEY")
     token = os.environ.get("PUSHPLUS_TOKEN")
