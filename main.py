@@ -174,7 +174,8 @@ def call_gemini(api_key, system, user, timeout=300):
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000},
+        # 输出上限：4000 会截断长报告（实测 4021 字即触顶，末尾"下周重点/财报日历"丢失）
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192},
     }
     body = json.dumps(payload).encode("utf-8")
     last_err = None
