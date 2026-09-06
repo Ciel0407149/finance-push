@@ -60,7 +60,9 @@ SEARCHES = [
     ("中国互联网", "美团 拼多多 京东 阿里 外卖 即时零售 Temu 今日 竞争 补贴", 1, "news"),
     ("新能源光伏", "通威 光伏 硅料 产能出清 反内卷 减产 涨价 今日", 2, "news"),
     ("黄金", "gold price real yields dollar central bank buying today safe haven", 2, "news"),
-    ("持仓财报日历", "Nvidia PDD Meituan earnings date estimates revenue EPS guidance next weeks", 3, "news"),
+    # 财报日历：覆盖全部持仓，时间窗放宽到 30 天（财报公告不会每天都有）
+    ("持仓财报日历-海外", "upcoming earnings date schedule NVIDIA ASML Micron \"SK Hynix\" Tesla Alphabet PDD Q3 2026 official announcement", 30, "news"),
+    ("持仓财报日历-中国", "美团 拼多多 青岛啤酒 通威股份 财报发布日期 业绩公告 三季度 预约披露时间", 30, "news"),
 ]
 
 
@@ -378,7 +380,15 @@ def main():
     framework, evening_seg = split_prompt(load_prompt())
     seg = evening_seg if mode == "evening" else (
         MORNING_SEGMENT if mode == "morning" else WEEKLY_SEGMENT)
-    system = framework + "\n\n" + seg
+    # 注入当前日期作为时间锚点：模型常因缺少"今天"而沿用提示词里的历史日期
+    # （例如 8 月写死的财报窗口到 9 月仍在用），这里强制以当天为准。
+    date_anchor = (
+        f"【当前时间锚点】现在是北京时间 {bj.year} 年 {bj.month} 月 {bj.day} 日"
+        f"（{WEEKDAYS[wd]}），此为全文唯一基准日期。"
+        f"所有财报日历、事件时效、数据归属的判断都必须以该日期为准；"
+        f"任何早于该日期且已过期的历史信息（尤其是历史财报日期）"
+        f"只能作为回顾引用，绝不能当作当期或未来事项。\n\n")
+    system = date_anchor + framework + "\n\n" + seg
 
     print(f"模式={mode} 开始联网检索 {len(SEARCHES)} 个主题 ...")
     # Gemini 上下文极大(1M token)，无需压缩搜索素材
