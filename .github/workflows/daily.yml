@@ -2,15 +2,29 @@ name: 财经推送
 
 on:
   schedule:
-    - cron: "0 1 * * 1-5"   # 北京 09:00 周一~周五 晨报
+    # ---- 主推送 ----
+    - cron: "0 1 * * 1-5"    # 北京 09:00 周一~周五 晨报
     - cron: "0 13 * * 1-5"   # 北京 21:00 周一~周五 晚报
     - cron: "0 13 * * 0"     # 北京 21:00 周日 周报
+    # ---- 补跑（整点后 40 分钟）：仅当主跑失败才真正推送，否则自动跳过 ----
+    - cron: "40 1 * * 1-5"   # 北京 09:40 晨报补跑
+    - cron: "40 13 * * 1-5"  # 北京 21:40 晚报补跑
+    - cron: "40 13 * * 0"    # 北京 21:40 周报补跑
   workflow_dispatch:
     inputs:
       mode:
         description: "morning / evening / weekly / auto"
         required: false
         default: "auto"
+      retry:
+        description: "true=作为补跑运行(已推送过会自动跳过)"
+        required: false
+        default: "false"
+
+# 补跑需要读取 Actions 运行记录来判断主跑是否失败
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   push:
@@ -27,4 +41,7 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 命中三个补跑 cron 时自动置 true（GitHub 会回传匹配的 cron 表达式）
+          IS_RETRY: ${{ github.event.schedule == '40 1 * * 1-5' || github.event.schedule == '40 13 * * 1-5' || github.event.schedule == '40 13 * * 0' || github.event.inputs.retry }}
         run: python main.py ${{ github.event.inputs.mode || 'auto' }}
